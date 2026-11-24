@@ -57,6 +57,28 @@ html, body { height: 100%; margin: 0; overflow: hidden; background: var(--ground
   try { if (atLeast('8.0') && tg.lockOrientation) tg.lockOrientation(); } catch (e) {}
   try { if (tg.setHeaderColor) tg.setHeaderColor('#1f2526'); } catch (e) {}
   try { if (tg.setBackgroundColor) tg.setBackgroundColor('#1f2526'); } catch (e) {}
+  // light taps from the phone's haptic engine
+  window.__haptic = function (kind) { try { if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred(kind); } catch (e) {} };
+  // re-fit the canvas whenever Telegram expands or goes fullscreen
+  var refit = function () { setTimeout(function () { if (window.__fit) window.__fit(); }, 60); };
+  try { tg.onEvent('viewportChanged', refit); tg.onEvent('fullscreenChanged', refit); } catch (e) {}
+  // tilt steering: neutral pose is taken when the player presses "подуть"
+  if (atLeast('8.0') && tg.DeviceOrientation) {
+    var base = null, deg = null;
+    window.__tiltRecenter = function () { base = null; };
+    try {
+      tg.onEvent('deviceOrientationChanged', function () {
+        var o = tg.DeviceOrientation, b = o.beta, g = o.gamma;
+        if (b == null || g == null) return;
+        if (deg === null) deg = Math.abs(b) > 6.3 || Math.abs(g) > 6.3;
+        if (!deg) { b *= 57.2958; g *= 57.2958; }
+        if (!base) base = { b: b, g: g };
+        var cl = function (v) { return Math.max(-1, Math.min(1, v)); };
+        window.__tilt = { x: cl((g - base.g) / 22), y: cl(-(b - base.b) / 22) };
+      });
+      tg.DeviceOrientation.start({ refresh_rate: 30 });
+    } catch (e) {}
+  }
 })();
 </script>
 </head>
@@ -197,11 +219,12 @@ const MAP_R = 470;
 
 // ================= renderer, scene, shared environment uniforms =================
 const stage = document.getElementById('stage');
+const VW = () => stage.clientWidth || innerWidth, VH = () => stage.clientHeight || innerHeight;
 const renderer = new THREE.WebGLRenderer({ antialias: !MOBILE, powerPreference: 'high-performance' });
 const PR_MAX = Math.min(window.devicePixelRatio || 1, MOBILE ? 1.3 : 1.75);
 let pixelRatio = PR_MAX;
 renderer.setPixelRatio(pixelRatio);
-renderer.setSize(innerWidth, innerHeight);
+renderer.setSize(VW(), VH());
 stage.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -209,7 +232,7 @@ const FOG = new THREE.Color(0.9, 0.92, 0.88);
 scene.fog = new THREE.Fog(FOG, 50, 400);
 scene.fog.color = FOG; // share the colour object so the haze follows the time of day
 scene.background = FOG;
-const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 2600);
+const camera = new THREE.PerspectiveCamera(62, VW() / VH(), 0.1, 2600);
 const SUN = new THREE.Vector3(0.5, 0.3, 0.8).normalize();
 const MOON = new THREE.Vector3(-0.78, 0.42, 0.46).normalize();
 
@@ -1421,7 +1444,8 @@ function hazardHit(kind, p) {
       leader.vel.multiplyScalar(-0.4); leader.vel.y += 5;
       flashSeq = [[0, 0.7], [0.06, 0.1], [0.12, 0.5], [0.2, 0]]; flashSeq.t0 = T;
       if (AC) zapSound();
-    } else { shake = 0.15; if (AC) burnSound(); }
+      if (window.__haptic) window.__haptic('heavy');
+    } else { shake = 0.15; if (AC) burnSound(); if (window.__haptic) window.__haptic('medium'); }
   }
   if (hz.kind === kind && T < hz.until) scar(p, kind);
 }
@@ -1713,7 +1737,9 @@ function readPad() { try { const pads = navigator.getGamepads ? navigator.getGam
 const dzn = (v, z) => Math.abs(v) < z ? 0 : (v - Math.sign(v) * z) / (1 - z);
 function readSteer() {
   let sx = 0, sy = 0, gust = 0;
-  if (input.mouseSeen || input.down) { sx = dzn(clamp(input.mx / 0.7, -1, 1), 0.04); sy = dzn(clamp(input.my / 0.7, -1, 1), 0.04); if (input.touch && !input.down) { sx = 0; sy = 0; } }
+  const tilt = window.__tilt;
+  if ((input.mouseSeen || input.down) && !(tilt && input.touch)) { sx = dzn(clamp(input.mx / 0.7, -1, 1), 0.04); sy = dzn(clamp(input.my / 0.7, -1, 1), 0.04); if (input.touch && !input.down) { sx = 0; sy = 0; } }
+  if (tilt) { sx = dzn(tilt.x, 0.06); sy = dzn(tilt.y, 0.06); }
   if (input.down) gust = 1;
   const k = input.keys;
   if (k.has('KeyA') || k.has('ArrowLeft')) sx = -1; if (k.has('KeyD') || k.has('ArrowRight')) sx = 1;
@@ -1786,6 +1812,7 @@ function collect(f) {
   const g = groups[f.k];
   if (AC) { playNote(g.notes[Math.min(g.got, g.n - 1)], g.stage); if (g.got === 0) bass(g.bass, noteTime()); }
   g.got++; f.alive = false; collected++;
+  if (window.__haptic) window.__haptic('light');
 
   while (nextSeq < flowers.length && !flowers[nextSeq].alive) nextSeq++;
   if (f.i >= nextSeq) nextSeq = Math.max(nextSeq, f.i + 1);
@@ -2101,12 +2128,15 @@ camera.position.copy(BIRTH_HEAD).add(new THREE.Vector3(2.2, 0.4, -2.2)); lookCur
 
 $('startBtn').addEventListener('click', () => {
   initAudio();
+  if (window.__tiltRecenter) window.__tiltRecenter();
   $('startVeil').classList.add('gone');
   $('blow').classList.remove('off');
   blowCharge = 0;
   cine = { mode: 'birth', t: 0 };
 });
-addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+let fitW = 0, fitH = 0;
+function fit() { const w = VW(), h = VH(); if (w === fitW && h === fitH) return; fitW = w; fitH = h; camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setSize(w, h); }
+window.__fit = fit; addEventListener('resize', fit); setInterval(fit, 600);
 
 let lastT = performance.now(), perfT = 0, perfN = 0;
 function frame(now) {
@@ -2115,8 +2145,8 @@ function frame(now) {
   perfT += dt; perfN++;
   if (perfT > 3) {
     const fps = perfN / perfT;
-    if (fps < 40 && pixelRatio > 0.8) { pixelRatio = Math.max(0.8, pixelRatio - 0.2); renderer.setPixelRatio(pixelRatio); renderer.setSize(innerWidth, innerHeight); starsU.uPR.value = pixelRatio; }
-    else if (fps > 57 && pixelRatio < PR_MAX - 0.01) { pixelRatio = Math.min(pixelRatio + 0.1, PR_MAX); renderer.setPixelRatio(pixelRatio); renderer.setSize(innerWidth, innerHeight); starsU.uPR.value = pixelRatio; }
+    if (fps < 40 && pixelRatio > 0.8) { pixelRatio = Math.max(0.8, pixelRatio - 0.2); renderer.setPixelRatio(pixelRatio); renderer.setSize(VW(), VH()); starsU.uPR.value = pixelRatio; }
+    else if (fps > 57 && pixelRatio < PR_MAX - 0.01) { pixelRatio = Math.min(pixelRatio + 0.1, PR_MAX); renderer.setPixelRatio(pixelRatio); renderer.setSize(VW(), VH()); starsU.uPR.value = pixelRatio; }
     perfT = 0; perfN = 0;
   }
   renderer.render(scene, camera);
